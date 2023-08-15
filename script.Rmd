@@ -1,0 +1,311 @@
+---
+title: "PPA"
+output: html_document
+---
+
+Research Question: 
+
+- Are the music venues in London, distributed randomly or do they exhibit some kind of dispersed or clustered pattern?”
+
+# Set the Library
+First, we set up the library and packages that we will use
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(sf)
+library(tmap)
+library(janitor)
+library(spatstat)
+```
+
+
+
+```{r}
+# music venues data loading
+
+music_venues <- read_csv("Music_venues_all.csv")
+```
+```{r}
+# London borough shapefile
+
+LondonBoroughs <- st_read("ESRI/London_Borough_Excluding_MHW.shp")
+```
+For music venues data, it shows 797 entries/rows and 15 columns/variables.
+
+I'll try to add na argument. For character data type, it will deleting the NA in the cell which has no value. 
+
+```{r}
+music_venues2 <- read_csv("Music_venues_all.csv", na=" ")
+```
+In numeric datatype, NA still NA, keep the consistent type data
+
+Check class - added na argument in code above.
+
+Checking the variable type to make sure there are no character columns that should be numeric due to NAs
+
+```{r}
+Datatypelist <- music_venues2 %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+```{r}
+Datatypelist_check <- music_venues %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist_check
+```
+# Data Wrangling
+
+Convert csv to sf object the map
+
+Check whether there are missing values for latitude and longitude in some rows, that we need to take out
+
+```{r}
+points <- music_venues2 %>%
+  filter(!is.na(longitude))%>%
+
+    st_as_sf(., coords = c("longitude", "latitude"), 
+                   crs = 4326)
+```
+
+Make a Map
+
+I make a map to see the distribution of the music venues in the map. For further analysis we can start see the distributions.
+
+```{r}
+tmap_mode("plot")
+tm_shape(LondonBoroughs) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(points) +
+  tm_dots(col = "blue") +
+tm_scale_bar(position = c("left", "top")) +
+tm_compass(position = c("left", "top")) + 
+tm_layout(main.title = "Music Venues in London", legend.outside = TRUE)
+```
+Spatial Subsetting
+
+```{r}
+#intersect <- st_intersects(LondonBoroughs, points)
+```
+
+It means the CRSs of the data doesn't match. We need to transform the LondonBoroughs
+
+```{r}
+  LondonBoroughs <- LondonBoroughs %>%
+  st_transform(., 4326)
+
+```
+
+```{r}
+intersect <- st_intersects(LondonBoroughs, points)
+```
+
+Only select points in the boundaries
+
+```{r}
+points_sub <- points[LondonBoroughs,]
+```
+
+```{r}
+# distint the data
+points_sub <- points_sub%>%
+  distinct(geometry, .keep_all = TRUE)
+```
+
+
+```{r}
+# visualisation
+tmap_mode("plot")
+tm_shape(LondonBoroughs) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(points_sub) +
+  tm_dots(col = "blue") +
+tm_scale_bar(position = c("left", "top")) +
+tm_compass(position = c("left", "top")) + 
+tm_layout(main.title = "Music Venues in London", legend.outside = TRUE)
+```
+## Data analysis
+
+The analysis that is conducted is point pattern analysis. I would like to see whether there are pattern / cluster in the music venues in London.
+
+Analisis using spatstat. Need to create an observation window for spatstat to carry out its analysis within
+
+```{r}
+# Transform the map, st_transform
+LondonBor <- LondonBoroughs %>% 
+  st_transform(., 27700)
+
+points_sub_projected <- points_sub %>%
+  st_transform(., 27700)
+```
+
+
+```{r}
+# create window
+window <- as.owin(LondonBor)
+plot(window)
+```
+spatstat has its own set of spatial objects that it works with (one of the delights of R is that different packages are written by different people and many have developed their own data types) — it does not work directly with the SpatialPolygonsDataFrames, SpatialPointsDataFrames or sf objects that we are used to. For point pattern analysis, we need to create a point pattern (ppp) object.
+
+```{r}
+#create a sp object
+points_sub_projected_sp <- points_sub_projected %>%
+  as(., 'Spatial')
+#create a ppp object
+points_sub_projected_sp.ppp <- ppp(x=points_sub_projected_sp@coords[,1],
+                          y=points_sub_projected_sp@coords[,2],
+                          window=window)
+```
+
+
+```{r}
+# plot the ppp object
+points_sub_projected_sp.ppp %>%
+  plot(.,pch=16,cex=0.5, 
+       main="Music Venues in London")
+```
+Kernel Density Estimation
+
+One way to summarise your point data is to plot the density of your points under a window called a ‘Kernel’. The size and shape of the Kernel affects the density pattern produced, but it is very easy to produce a Kernel Density Estimation (KDE) map from a ppp object using the density() function.
+
+The sigma value sets the diameter of the Kernel. I will try several sigma to see the cluster indication from the density points. 
+
+```{r}
+points_sub_projected_sp.ppp %>%
+  density(., sigma=250) %>%
+  plot(main = "Kernel Density Estimation Map")
+```
+```{r}
+points_sub_projected_sp.ppp %>%
+  density(., sigma=500) %>%
+  plot(main = "Kernel Density Estimation Map")
+```
+
+```{r}
+points_sub_projected_sp.ppp %>%
+  density(., sigma=1500) %>%
+  plot(main = "Kernel Density Estimation Map")
+```
+Ripley's K
+
+I use Ripley's K for
+- because I'm interested in examining how the clustering/dispersion of the features changes at different distances (different scales of analysis)
+- compare the observed distribution of points with the Poisson random model for a whole range of different distance radii
+
+```{r}
+K <- points_sub_projected_sp.ppp %>%
+  Kest(., correction="border") %>%
+  plot(main = "Ripley's K with border correction")
+```
+There are several parameter correction of Ripley's K. The correction specifies how points towards the edge are dealt with, in this case, border means that points towards the edge are ignored for the calculation but are included for the central points.
+
+The Kpois(r) line in Red is the theoretical value of K for each distance window (r) under a Poisson assumption of Complete Spatial Randomness. The Black line is the estimated values of K accounting for the effects of the edge of the study area.
+
+Where the value of K falls above the line, the data appear to be clustered at that distance. Where the value of K is below the line, the data are dispersed. From the graph, we can see that the black line is almost all above the red line. We cannot really get the insights from this, it seems all London borough is clustered in almost all the distance. 
+
+```{r}
+Kval <- as.data.frame(Kest(points_sub_projected_sp.ppp, correction = "Ripley"))
+```
+
+```{r}
+Kval
+```
+Density-based spatial clustering of applications with noise: DBSCAN
+
+Ripley’s K analysis is useful exploratory technique for telling us if we have spatial clusters present in our point data, but they are not able to tell us where in our area of interest the clusters are occurring. To discover this we need to use alternative techniques. One popular technique for discovering clusters in space (be this physical space or variable space) is DBSCAN.
+
+For DBSCAN clustering, the points are classified as core points, (directly-) reachable points and outliers
+- core point, at least minPts points are within distance
+- points are only said to be directly reachable from core points, it has no minPts
+- noise/outlier, all points not reachable from any other point
+
+```{r}
+# load the library needed
+library(raster)
+library(fpc)
+```
+We will now carry out a DBSCAN analysis of music venues in London to see if there are any clusters present.
+
+```{r}
+#first check the coordinate reference system of the London spatial polygon:
+st_geometry(LondonBor)
+```
+DBSCAN requires to input two parameters: 1. Epsilon - this is the radius within which the algorithm with search for clusters 2. MinPts - this is the minimum number of points that should be considered a cluster
+
+Based on the results of the Ripley’s K analysis earlier, we can't tell because we can't see the bulge. But what I did I tried to look at sigma in density for estimation cluster present. I tried to use 1500 for epsilon. 
+
+```{r}
+#first extract the points from the spatial points data frame
+LonSubPoints <- points_sub_projected_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+db <- LonSubPoints %>%
+  fpc::dbscan(.,eps = 1500, MinPts = 10)
+
+#now plot the results
+plot(db, LonSubPoints, main = "DBSCAN Output", frame = F)
+plot(LondonBor$geometry, add=T)
+```
+I also use kNNdistplot() from the dbscan pacakge to find a suitable eps value based on the ‘knee’ in the plot.
+
+```{r}
+# used to find suitable eps value based on the knee in plot
+# k is no of nearest neighbours used, use min points
+library(dbscan)
+
+LonSubPoints%>%
+  dbscan::kNNdistplot(.,k=10)
+```
+Fast caclulation of the k-nearest neighbor distances in a matrix of points. The plot can be used to help find a suitable value for the eps neighborhood for DBSCAN. Look for the knee in the plot.
+The knee is around a distance of 1500. We can use epsilon 1500
+
+```{r}
+# Add the cluster information to our original dataframe
+LonSubPoints<- LonSubPoints %>%
+  mutate(dbcluster=db$cluster)
+```
+
+```{r}
+# Convert our original data frame to a sf object again
+tosf <- LonSubPoints%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 27700)%>%
+  filter(dbcluster>0)
+```
+
+Map the data using tmap
+
+```{r}
+library(tmap)
+library(sf)
+
+library(RColorBrewer)
+library(tmaptools)
+colours<- get_brewer_pal("Set1", n = 8)
+
+tmap_mode("plot")
+tm_shape(LondonBoroughs) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(tosf) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat") +
+tm_scale_bar(position = c("right", "top")) +
+tm_compass(position = c("right", "top")) + 
+tm_layout(main.title = "Music Venues Cluster in London", legend.outside = TRUE)
+```
+## Reflection and Discussions 
+
+From the result we can see that it demonstrate several clusters of music venues in London. It's difficult to say from the Ripley's K result because we can see that the black line is almost all above the red line. We cannot really get the insights from this, it seems almost all music venues are clustered in whatever the distance. 
+
+Then I progress the work to DBSCAN algorithm. There might be a limitation in deciding the value of the epsilon for DBSCAN because of the Ripley's K result. However the sigma from kernel density estimation may help. Other limitation I think also the number of data points. We might see different result if we have more data points within the Borough. 
+
+The result of the point pattern analysis of music venues in London borough may give a policy maker an indication whether does the music venues are quite clustered in the city-centered areas within the borough in London. After we know the cluster or distribution, we may conduct further analysis whether why they are clustered like that, and whether there are implications with other variables such as number of people and social economic variables. 
+
+
